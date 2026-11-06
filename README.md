@@ -2,64 +2,65 @@
 
 **English** | [中文](README.zh.md) | [한국어](README.ko.md) | [日本語](README.ja.md)
 
-**Turn a CAD drainage drawing into a runnable EPA SWMM model — in one command.**
+I do building drainage design for a living. Every project ends the same way:
+the CAD drawing is finished, and then I sit in SWMM typing manholes, pipes,
+diameters and invert levels all over again — data that is already in the
+drawing. After one too many rounds of that, I wrote this.
 
-Every SWMM automation tool on GitHub starts from GIS data. But engineers don't draw
-drainage networks in GIS — they draw them in CAD. `cad2swmm` is the missing bridge:
-give it a DXF with manholes and pipes, get back a complete `.inp` that opens and
-runs in EPA SWMM 5.
+cad2swmm reads a DXF drainage drawing and writes a SWMM `.inp` file you can
+open and run in EPA SWMM 5. That is all it does, but it removes the worst
+hour of the job. The other SWMM tools on GitHub all start from GIS data;
+engineers don't draw drainage networks in GIS, so the CAD step was missing.
 
 ```bash
 pip install ezdxf
 python cad2swmm.py my_network.dxf -o my_network.inp
 ```
 
-## What it does
+## What it reads from the drawing
 
-| From your drawing | To the SWMM model |
-|---|---|
-| Manhole blocks / points / circles on the node layer | `[JUNCTIONS]` (+ `[OUTFALLS]`) |
-| Block attributes `ID`, `INV` / `IL` / `ELEV`, or `IL=12.34` text | Node names & invert elevations |
-| `LINE` / `LWPOLYLINE` on the pipe layer | `[CONDUITS]` with true geometric lengths |
-| `DN300` / `D300` / `Φ300` / `300mm` text near a pipe | `[XSECTIONS]` circular diameters |
-| Invert elevations | Flow direction (high → low), automatically |
+- Manholes: blocks, points or circles on the node layers become junctions
+  (and outfalls)
+- Node names and invert levels come from block attributes (`ID`, `INV` /
+  `IL` / `ELEV`) or from text like `IL=12.34`
+- Pipes: lines and polylines on the pipe layers become conduits, with the
+  length measured from the actual geometry
+- Diameters come from `DN300` / `D300` / `Φ300` / `300mm` labels near a pipe
+- Flow direction follows the inverts, high to low
 
-Nothing is silently dropped: unsnapped pipe endpoints create auto nodes, and every
-value that had to be defaulted (a missing diameter label, a missing invert) is
-reported as a warning with the element it belongs to.
+If a pipe endpoint doesn't snap to a manhole, it creates a node for it.
+Anything it had to guess — a missing diameter label, a missing invert — is
+printed as a warning naming the pipe or manhole it belongs to. It does not
+quietly invent numbers.
 
-## Quick start
+## Try it
+
+The `examples` folder has a small 5-node, 4-pipe network drawn the normal
+way (the DXF is generated, so run the first command first):
 
 ```bash
-# generate the bundled example drawing, then convert it (drawing in metres, the default)
 python examples/make_example.py
 python cad2swmm.py examples/example.dxf -o examples/example.inp
 
-# drawing in millimetres, with a 50 L/s smoke-test inflow
+# if your drawing is in millimetres, and you want a 50 L/s test inflow
 python cad2swmm.py site.dxf -o site.inp --scale 0.001 --design-flow 50
 ```
 
-Try the bundled example — a 5-node, 4-pipe network drawn exactly the way
-engineers draw it (the DXF is generated, run `python examples/make_example.py` first):
+The example converts to:
 
 ```
 nodes: 5 (junctions 4 + outfall OUT1)
 conduits: 4, total length 115.0 m
 ```
 
-Verify the output yourself:
+There are two test scripts, because I wanted proof rather than a screenshot.
+`tests/validate.py` checks the structure (lengths, diameters, flow
+directions). `tests/run_swmm.py` runs the generated file in the real EPA
+SWMM engine through pyswmm: the 50 L/s design inflow routes end to end,
+peak at the outfall is about 54 L/s including dynamic-wave effects, and the
+flow-routing continuity error stays under 0.1%.
 
-```bash
-python tests/validate.py     # structural checks: lengths, diameters, flow directions
-pip install pyswmm
-python tests/run_swmm.py     # runs the model in the real EPA SWMM engine
-```
-
-The engine run is part of the test suite, not a screenshot: the generated model
-routes the 50 L/s design inflow end-to-end (peak outfall inflow ≈ 54 L/s
-including dynamic-wave effects, flow-routing continuity error < 0.1%).
-
-## Key options
+## Options
 
 ```
 --scale 0.001         drawing units -> metres (0.001 if the drawing is in mm)
@@ -73,37 +74,30 @@ including dynamic-wave effects, flow-routing continuity error < 0.1%).
 --snap 2.0                 endpoint-to-node snap tolerance (drawing units)
 ```
 
-## Drawing conventions
+## How to draw so it works
 
-Draw the way you already draw — the defaults recognise both English and Chinese
-CAD layer conventions:
+Keep drawing the way you already draw. The defaults recognise both English
+and Chinese layer conventions:
 
-- **Nodes**: block references, points, or circles on layers like `MANHOLE`, `NODE`, `检查井`, `井`
-- **Pipes**: lines / polylines on layers like `PIPE`, `SEWER`, `管线`, `管道`, `排水`
-- **Outfall**: a node block with attribute `TYPE=OUTFALL`, or pass `--outfall`
-- DWG files: save-as DXF in your CAD package first (or batch-convert with ODA File Converter)
+- Nodes: block references, points or circles on layers like `MANHOLE`,
+  `NODE`, `检查井`, `井`
+- Pipes: lines / polylines on layers like `PIPE`, `SEWER`, `管线`, `管道`,
+  `排水`
+- Outfall: a node block with attribute `TYPE=OUTFALL`, or pass `--outfall`
+- DWG files: save as DXF in your CAD package first (or batch-convert with
+  ODA File Converter)
 
-## Roadmap
+## What it doesn't do yet
 
-- Native DWG reading (ODA / LibreDWG)
-- Subcatchments & rainfall from CAD hatches and annotation
-- Sewer + stormwater dual drainage, pump/valve blocks
-- Optional hand-off to [agentic-swmm-workflow](https://github.com/Zhonghao1995/agentic-swmm-workflow) for simulation runs and Word reports
+- Read DWG directly
+- Subcatchments and rainfall — you still delineate those yourself
+- Pumps, valves and dual (sewer + storm) systems
 
-## 中文说明
+It also works as an agent skill (see `SKILL.md`) in tools that support
+SKILL.md, such as Claude Code and DeepSeek Harness: drop it in and say
+"turn this CAD drawing into a SWMM model".
 
-工程师画排水管网用的是 CAD，可 GitHub 上所有 SWMM 自动化工具都只吃 GIS 数据——
-这一步没人补。`cad2swmm` 干的就是这件事：把 DXF 图纸里的检查井、管道、管径标注、
-井底标高自动提取出来，一条命令生成 EPA SWMM 能直接打开、能跑的 `.inp` 模型文件。
-识别不到的值（缺管径标注、缺标高）不会瞎编，会逐条警告告诉你哪根管、哪口井用了默认值。
-
-```bash
-pip install ezdxf
-python cad2swmm.py 图纸.dxf -o 模型.inp --scale 0.001   # 图纸单位是毫米时
-```
-
-也可以作为 Agent Skill 使用（见 `SKILL.md`），在 Claude Code / DeepSeek Harness 等
-支持 SKILL.md 的工具里装上后，直接说「把这张 CAD 图转成 SWMM 模型」即可。
+中文说明在 [README.zh.md](README.zh.md)。
 
 ## License
 

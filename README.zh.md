@@ -2,59 +2,55 @@
 
 [English](README.md) | **中文** | [한국어](README.ko.md) | [日本語](README.ja.md)
 
-**把一张 CAD 排水图纸，一条命令变成能跑的 EPA SWMM 模型。**
+我是做建筑给排水设计的。每个项目到最后都一样：CAD 图画完了，然后坐到
+SWMM 里，把检查井、管道、管径、井底标高再敲一遍——这些数据明明都在图里。
+敲烦了，就写了这个小东西。
 
-GitHub 上所有 SWMM 自动化工具都从 GIS 数据开始。可工程师画排水管网不用 GIS——用的是 CAD。
-`cad2swmm` 补的就是这座桥：给它一张带检查井和管道的 DXF，还你一个完整、能在 EPA SWMM 5 里
-打开并运行的 `.inp` 模型文件。
+cad2swmm 读一张 DXF 排水图纸，生成一个能在 EPA SWMM 5 里直接打开、能跑的
+`.inp` 文件。它只干这一件事，但省掉的是最烦的那一个小时。GitHub 上其他
+SWMM 工具都从 GIS 数据开始，可工程师画管网不用 GIS，CAD 这一步一直没人补。
 
 ```bash
 pip install ezdxf
 python cad2swmm.py my_network.dxf -o my_network.inp
 ```
 
-## 它做什么
+## 它从图里读什么
 
-| 图纸里有什么 | 模型里生成什么 |
-|---|---|
-| 节点图层上的检查井块 / 点 / 圆 | `[JUNCTIONS]`（外加 `[OUTFALLS]`） |
-| 块属性 `ID`、`INV` / `IL` / `ELEV`，或 `IL=12.34` 文字 | 节点名称与井底标高 |
-| 管线图层上的 `LINE` / `LWPOLYLINE` | 带真实几何长度的 `[CONDUITS]` |
-| 管道附近的 `DN300` / `D300` / `Φ300` / `300mm` 文字 | `[XSECTIONS]` 圆形管径 |
-| 井底标高 | 流向自动定向（高 → 低） |
+- 检查井：节点图层上的块、点、圆，生成节点和排放口
+- 井名和井底标高：来自块属性（`ID`、`INV` / `IL` / `ELEV`），或 `IL=12.34`
+  这样的文字
+- 管道：管线图层上的直线、多段线，生成管道，长度按几何实测
+- 管径：管道附近的 `DN300` / `D300` / `Φ300` / `300mm` 标注
+- 流向：按标高自动定向，高往低流
 
-不会有东西被悄悄丢掉：管端点吸附不到井时会自动建节点；凡是不得不用默认值顶替的
-（缺管径标注、缺标高），都会逐条警告，告诉你出在哪根管、哪口井。
+管端点吸附不到井时，它会自己补一个节点。凡是猜出来的值——缺管径标注、
+缺标高——都会逐条打印警告，写明是哪根管、哪口井，不会闷声瞎填。
 
-## 快速上手
+## 先跑个例子
+
+`examples` 里有个 5 节点、4 根管的小管网，按平时画图的样子画的（DXF 是
+脚本生成的，先跑第一条命令）：
 
 ```bash
-# 先生成自带示例图纸，再转换（图纸单位为米，默认）
 python examples/make_example.py
 python cad2swmm.py examples/example.dxf -o examples/example.inp
 
-# 图纸单位是毫米时，加一个冒烟测试入流
+# 图纸单位是毫米时，再加一个 50 L/s 的测试入流
 python cad2swmm.py site.dxf -o site.inp --scale 0.001 --design-flow 50
 ```
 
-自带示例是 5 个节点、4 根管的小管网，按工程师平时的画法画的（DXF 由
-`examples/make_example.py` 生成）：
+示例转换结果：
 
 ```
 nodes: 5 (junctions 4 + outfall OUT1)
 conduits: 4, total length 115.0 m
 ```
 
-自己验证输出质量：
-
-```bash
-python tests/validate.py     # 结构校验：管长、管径、流向
-pip install pyswmm
-python tests/run_swmm.py     # 用真正的 EPA SWMM 引擎实跑模型
-```
-
-引擎实跑是测试的一部分，不是截图秀：生成的模型能把 50 L/s 设计入流从头输送到尾
-（出水口峰值约 54 L/s，含动力波效应；流量演算连续性误差 < 0.1%）。
+仓库里有两个测试脚本，因为我要的是证据，不是截图。`tests/validate.py`
+查结构（管长、管径、流向）；`tests/run_swmm.py` 用 pyswmm 调真正的 EPA
+SWMM 引擎实跑生成的模型：50 L/s 设计入流从头输到尾，出水口峰值约 54 L/s
+（含动力波效应），流量演算连续性误差小于 0.1%。
 
 ## 主要参数
 
@@ -70,24 +66,24 @@ python tests/run_swmm.py     # 用真正的 EPA SWMM 引擎实跑模型
 --snap 2.0                 管端点到井的吸附容差（图纸单位）
 ```
 
-## 画图约定
+## 图要怎么画
 
-按你平时的画法画就行——默认同时识别英文和中文 CAD 图层习惯：
+按你平时的画法就行，默认同时认英文和中文图层名：
 
-- **节点**：块参照、点或圆，图层如 `MANHOLE`、`NODE`、`检查井`、`井`
-- **管道**：直线 / 多段线，图层如 `PIPE`、`SEWER`、`管线`、`管道`、`排水`
-- **排放口**：井块带属性 `TYPE=OUTFALL`，或用 `--outfall` 指定
-- DWG 文件：先在 CAD 里另存为 DXF（或用 ODA File Converter 批量转换）
+- 节点：块参照、点或圆，图层如 `MANHOLE`、`NODE`、`检查井`、`井`
+- 管道：直线 / 多段线，图层如 `PIPE`、`SEWER`、`管线`、`管道`、`排水`
+- 排放口：井块带属性 `TYPE=OUTFALL`，或用 `--outfall` 指定
+- DWG 文件：先在 CAD 里另存为 DXF（或用 ODA File Converter 批量转）
 
-也可以作为 Agent Skill 使用（见 `SKILL.md`）：装进支持 SKILL.md 的工具
-（Claude Code、DeepSeek Harness 等），直接说「把这张 CAD 图转成 SWMM 模型」即可。
+## 还做不到的
 
-## 路线图
+- 直接读 DWG
+- 汇水区和降雨——这部分还得你自己划
+- 水泵、阀门、雨污双系统
 
-- 原生读取 DWG（ODA / LibreDWG）
-- 从 CAD 填充与标注生成汇水区与降雨
-- 污水 + 雨水双系统、水泵/阀门块
-- 可选衔接 [agentic-swmm-workflow](https://github.com/Zhonghao1995/agentic-swmm-workflow) 做模拟运行与 Word 报告
+它也能当 Agent Skill 用（见 `SKILL.md`）：装进支持 SKILL.md 的工具
+（Claude Code、DeepSeek Harness 等），直接说「把这张 CAD 图转成 SWMM
+模型」就行。
 
 ## License
 

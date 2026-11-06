@@ -2,95 +2,97 @@
 
 [English](README.md) | [中文](README.zh.md) | [한국어](README.ko.md) | **日本語**
 
-**CAD の排水図面を、コマンドひとつで実行可能な EPA SWMM モデルに変換します。**
+私は建築の排水設計をしている人間です。プロジェクトの最後はいつも同じ
+作業が残ります。CAD 図面は描き終わったのに、SWMM を開いてマンホール、
+管、管径、管底高を最初から打ち直す。データは図面の中にもうあるのに、
+です。その作業を何度か繰り返して、これを作りました。
 
-GitHub 上の SWMM 自動化ツールはすべて GIS データから出発します。しかし技術者は排水管網を
-GIS で描きません — CAD で描きます。`cad2swmm` はその橋渡しです。マンホールと管路が描かれた
-DXF を渡せば、EPA SWMM 5 で開いてそのまま実行できる完全な `.inp` モデルファイルが返ってきます。
+cad2swmm は DXF の排水図面を読み、EPA SWMM 5 でそのまま開いて実行できる
+`.inp` ファイルを書き出します。やることはこれ一つだけですが、いちばん
+面倒な 1 時間が消えます。GitHub の他の SWMM ツールはどれも GIS データ
+から始まりますが、エンジニアは排水管網を GIS で描かないので、CAD の
+一段が抜けていました。
 
 ```bash
 pip install ezdxf
 python cad2swmm.py my_network.dxf -o my_network.inp
 ```
 
-## 何をするものか
+## 図面から読むもの
 
-| 図面にあるもの | モデルに生成されるもの |
-|---|---|
-| ノードレイヤー上のマンホールブロック / 点 / 円 | `[JUNCTIONS]`（+ `[OUTFALLS]`） |
-| ブロック属性 `ID`、`INV` / `IL` / `ELEV`、または `IL=12.34` テキスト | ノード名と管底高 |
-| 管路レイヤー上の `LINE` / `LWPOLYLINE` | 実測の幾何長を持つ `[CONDUITS]` |
-| 管路近くの `DN300` / `D300` / `Φ300` / `300mm` テキスト | `[XSECTIONS]` 円形管径 |
-| 管底高 | 流向を自動判定（高い方 → 低い方） |
+- マンホール：ノードレイヤー上のブロック・点・円 → ジャンクションと放流口
+- ノード名と管底高：ブロック属性（`ID`、`INV` / `IL` / `ELEV`）、または
+  `IL=12.34` のような文字
+- 管：管レイヤー上の線分とポリライン → 管路（長さはジオメトリから実測）
+- 管径：管の近くの `DN300` / `D300` / `Φ300` / `300mm` ラベル
+- 流向：管底高に従い、高い方から低い方へ自動で決定
 
-黙って欠落するものはありません。管端点がマンホールにスナップしない場合は自動ノードを作成し、
-デフォルト値で代替した箇所（管径ラベルなし、管底高なし）は、どの管・どのマンホールかを
-添えて一件ずつ警告として報告します。
+管の端点がマンホールに吸着しない場合は、ノードを自動で作ります。管径
+ラベルや管底高がなくて推定した値は、どの管・どのマンホールか名前付きで
+警告として出力します。黙って数字をでっち上げることはしません。
 
-## クイックスタート
+## まず例を動かす
+
+`examples` フォルダにノード 5 個、管 4 本の小さな管網が入っています
+（DXF はスクリプト生成なので、最初のコマンドを先に実行してください）。
 
 ```bash
-# 同梱のサンプル図面を生成してから変換（図面単位はメートル、デフォルト）
 python examples/make_example.py
 python cad2swmm.py examples/example.dxf -o examples/example.inp
 
-# 図面単位がミリメートルの場合、スモークテスト用流入量を追加
+# 図面の単位が mm で、50 L/s のテスト流入を入れる場合
 python cad2swmm.py site.dxf -o site.inp --scale 0.001 --design-flow 50
 ```
 
-同梱サンプルはノード 5 個・管路 4 本の小さな管網で、技術者が実際に描く方法そのままで
-描かれています（DXF は `examples/make_example.py` が生成）。
+変換結果：
 
 ```
 nodes: 5 (junctions 4 + outfall OUT1)
 conduits: 4, total length 115.0 m
 ```
 
-出力は自分で検証できます:
-
-```bash
-python tests/validate.py     # 構造チェック: 管長、管径、流向
-pip install pyswmm
-python tests/run_swmm.py     # 本物の EPA SWMM エンジンでモデルを実行
-```
-
-エンジン実行はスクリーンショットではなくテストの一部です。生成されたモデルは 50 L/s の
-設計流入量を最初から最後まで送り届けます（放流口のピーク流入は約 54 L/s、動的波の影響を含む。
-流量ルーティングの連続性誤差 < 0.1%）。
+テストスクリプトが 2 つあるのは、スクリーンショットではなく証拠が
+欲しかったからです。`tests/validate.py` は構造（管長、管径、流向）を
+検査し、`tests/run_swmm.py` は pyswmm 経由で本物の EPA SWMM エンジンで
+生成モデルを実行します。50 L/s の設計流入が最後まで流れ、放流口の
+ピークは動力波の影響込みで約 54 L/s、流量ルーティングの連続性誤差は
+0.1% 未満です。
 
 ## 主なオプション
 
 ```
---scale 0.001         図面単位 → メートル（図面が mm 単位なら 0.001）
---node-layers 井,MANHOLE   マンホール/ノードのあるレイヤー
---pipe-layers 管线,PIPE    管路のあるレイヤー
---default-diameter 0.3     DN ラベルがない場合のデフォルト管径 (m)
---default-invert 0.0       管底高がない場合のデフォルト値 (m)
---outfall J9               放流口ノード名（なければ最も低いノード）
---roughness 0.013          粗度係数（デフォルト: コンクリート管）
---design-flow 50           最も高い接続点に定常流入 (L/s) を追加、スモークテスト用
---snap 2.0                 端点とノードのスナップ許容差（図面単位）
+--scale 0.001         drawing units -> metres (0.001 if the drawing is in mm)
+--node-layers 井,MANHOLE   layers that hold manholes/nodes
+--pipe-layers 管线,PIPE    layers that hold pipes
+--default-diameter 0.3     fallback diameter (m) when no DN label is found
+--default-invert 0.0       fallback invert elevation (m)
+--outfall J9               name of the outfall node (else: lowest node)
+--roughness 0.013          Manning's n (default: concrete pipe)
+--design-flow 50           add a constant inflow (L/s) at the highest junction
+--snap 2.0                 endpoint-to-node snap tolerance (drawing units)
 ```
 
-## 作図の約束事
+## 図面の描き方
 
-普段どおり描けば大丈夫です。デフォルトで英語と中国語の CAD レイヤー慣習の両方を認識します。
+普段の描き方で大丈夫です。デフォルトで英語と中国語のレイヤー名の両方を
+認識します。
 
-- **ノード**: `MANHOLE`、`NODE`、`检查井`、`井` などのレイヤー上のブロック参照、点、円
-- **管路**: `PIPE`、`SEWER`、`管线`、`管道`、`排水` などのレイヤー上の線分 / ポリライン
-- **放流口**: 属性 `TYPE=OUTFALL` を持つノードブロック、または `--outfall` で指定
-- DWG ファイル: CAD で DXF 形式に名前を付けて保存するか、ODA File Converter で一括変換
+- ノード：`MANHOLE`、`NODE`、`检查井`、`井` などのレイヤー上のブロック
+  参照、点、円
+- 管：`PIPE`、`SEWER`、`管线`、`管道`、`排水` などのレイヤー上の線分 /
+  ポリライン
+- 放流口：`TYPE=OUTFALL` 属性を持つノードブロック、または `--outfall`
+- DWG ファイル：先に CAD で DXF に別名保存（または ODA File Converter
+  で一括変換）
 
-Agent Skill としても使えます（`SKILL.md` 参照）。SKILL.md に対応するツール
-（Claude Code、DeepSeek Harness など）に導入し、「この CAD 図面を SWMM モデルに変換して」
-と伝えるだけです。
+## まだできないこと
 
-## ロードマップ
+- DWG の直接読み込み
+- 集水区と降雨 — ここはまだ自分で区切る必要があります
+- ポンプ、バルブ、雨水・汚水の二重システム
 
-- DWG の直接読み込み（ODA / LibreDWG）
-- CAD のハッチングと注記から集水区と降雨を生成
-- 汚水 + 雨水の二重排水、ポンプ/バルブブロック
-- シミュレーション実行と Word レポートのための [agentic-swmm-workflow](https://github.com/Zhonghao1995/agentic-swmm-workflow) との連携（任意）
+SKILL.md に対応するツール（Claude Code、DeepSeek Harness など）では、
+エージェントスキルとしても使えます（`SKILL.md` 参照）。
 
 ## License
 
