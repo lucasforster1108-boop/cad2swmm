@@ -26,13 +26,21 @@ Output: a complete .inp ([OPTIONS], [JUNCTIONS], [OUTFALLS], [CONDUITS],
 With --design-flow LPS a constant inflow is added at the most upstream junction
 so the model produces real routed flow, not just an empty run.
 
-Requires: ezdxf  (pip install ezdxf)
+Pipeline: with --pipeline (or --run / --report) the same script keeps going —
+it runs the .inp in the real EPA SWMM engine (via pyswmm) and turns the .rpt
+into a Chinese check report (Markdown) using the vendored swmm_report_cn
+package in this repo:  DXF -> .inp -> .rpt -> 校核报告.md.  An existing .inp
+or .rpt can also be passed as input to use just the later stages.
+
+Requires: ezdxf  (pip install ezdxf);  pyswmm for --run/--pipeline.
 License: MIT
 """
 
 import argparse
 import math
+import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass, field
 
@@ -322,9 +330,129 @@ def write_inp(nodes, conduits, outfall, args):
     return "\n".join(L) + "\n"
 
 
+def run_simulation(inp_path):
+    """Run inp_path in the EPA SWMM engine via pyswmm; return the .rpt path.
+
+    pyswmm writes the .rpt (and binary .out) next to the .inp, same stem.
+    Raises RuntimeError with a readable message on any failure.
+    """
+    try:
+        from pyswmm import Simulation
+    except ImportError:
+        raise RuntimeError("pyswmm is not installed — pip install pyswmm "
+                           "(needed for --run / --pipeline)")
+    with Simulation(inp_path) as sim:
+        for _ in sim:
+            pass
+    rpt_path = os.path.splitext(inp_path)[0] + ".rpt"
+    if not os.path.exists(rpt_path):
+        raise RuntimeError(f"simulation produced no report file (expected {rpt_path})")
+    with open(rpt_path, encoding="utf-8", errors="replace") as f:
+        errors = [ln.strip() for ln in f if ln.startswith("ERROR")]
+    if errors:
+        raise RuntimeError("SWMM reported errors:\n    " + "\n    ".join(errors[:5]))
+    return rpt_path
+
+
+def make_report(rpt_path, inp_path, report_path):
+    """Generate the Chinese check report (.md) for a .rpt.
+
+    Uses the vendored swmm_report_cn package that ships in this repo
+    (swmm_report_cn/, MIT, zero third-party dependencies).
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from swmm_report_cn import generate_report, parse_inp, parse_rpt
+
+    data = parse_rpt(rpt_path)
+    inp_info = parse_inp(inp_path) if inp_path and os.path.exists(inp_path) else {}
+    md = generate_report(data, inp_info=inp_info)
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(md)
+    return report_path
+
+
+def relocate(outdir, path):
+    """Move a run product (and its .out sibling) into outdir; return its new path."""
+    os.makedirs(outdir, exist_ok=True)
+    if os.path.dirname(os.path.abspath(path)) == os.path.abspath(outdir):
+        return path
+    new_path = os.path.join(outdir, os.path.basename(path))
+    shutil.move(path, new_path)
+    out_sibling = os.path.splitext(path)[0] + ".out"
+    if os.path.exists(out_sibling):
+        shutil.move(out_sibling, os.path.join(outdir, os.path.basename(out_sibling)))
+    return new_path
+
+
+def resolve_report_path(args, inp_path, rpt_path):
+    if args.report_output:
+        return args.report_output
+    stem = os.path.splitext(os.path.basename(inp_path))[0]
+    d = args.outdir or os.path.dirname(rpt_path)
+    name = stem + "_校核报告.md"
+    return os.path.join(d, name) if d else name
+
+
+def finish_pipeline(args, inp_path):
+    """Shared pipeline tail: optionally run the model, optionally write the report."""
+    rpt_path = None
+    if args.run:
+        try:
+            rpt_path = run_simulation(inp_path)
+        except Exception as e:
+            print(f"error: simulation failed: {e}", file=sys.stderr)
+            return 1
+        print(f"    ran in the EPA SWMM engine -> {rpt_path}")
+        if args.outdir:
+            rpt_path = relocate(args.outdir, rpt_path)
+    if args.report:
+        if rpt_path is None:
+            cand = os.path.splitext(inp_path)[0] + ".rpt"
+            if not os.path.exists(cand):
+                print("error: --report needs a .rpt — add --run (or --pipeline), "
+                      "or put an existing .rpt next to the .inp", file=sys.stderr)
+                return 1
+            rpt_path = cand
+            print(f"    using existing report file {rpt_path}")
+        report_path = resolve_report_path(args, inp_path, rpt_path)
+        try:
+            make_report(rpt_path, inp_path, report_path)
+        except Exception as e:
+            print(f"error: report generation failed: {e}", file=sys.stderr)
+            return 1
+        print(f"    check report -> {report_path}")
+    return 0
+
+
+def report_only(args):
+    """Input is an existing .rpt: just generate the Chinese check report."""
+    if not os.path.exists(args.input):
+        print(f"error: cannot read {args.input}", file=sys.stderr)
+        return 1
+    inp_sibling = os.path.splitext(args.input)[0] + ".inp"
+    stem = os.path.splitext(os.path.basename(args.input))[0]
+    if args.report_output:
+        report_path = args.report_output
+    else:
+        d = args.outdir or os.path.dirname(args.input)
+        name = stem + "_校核报告.md"
+        report_path = os.path.join(d, name) if d else name
+    try:
+        make_report(args.input, inp_sibling, report_path)
+    except Exception as e:
+        print(f"error: report generation failed: {e}", file=sys.stderr)
+        return 1
+    print(f"OK  {args.input} -> {report_path}")
+    print("    Chinese check report generated from the existing .rpt (no conversion, no run)")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Convert a CAD (DXF) drainage network to a SWMM .inp model.")
-    ap.add_argument("input", help="input .dxf file (export DWG to DXF first if needed)")
+    ap.add_argument("input", help="input .dxf file (export DWG to DXF first if needed); "
+                                  "an existing .inp (use with --run/--report) or .rpt (report only) also works")
     ap.add_argument("-o", "--output", default=None, help="output .inp path (default: input name with .inp)")
     ap.add_argument("--scale", type=float, default=1.0,
                     help="drawing-unit -> metre factor (1.0 = drawing already in metres, 0.001 = millimetres)")
@@ -340,7 +468,39 @@ def main(argv=None):
     ap.add_argument("--outfall", default=None, help="name of the outfall node")
     ap.add_argument("--design-flow", type=float, default=0.0,
                     help="optional constant inflow (LPS) at the most upstream junction, for a smoke-test run")
+    ap.add_argument("--run", action="store_true",
+                    help="after conversion, run the .inp in the EPA SWMM engine (pyswmm), producing a .rpt")
+    ap.add_argument("--report", action="store_true",
+                    help="generate a Chinese check report (.md) from the .rpt (vendored swmm_report_cn); "
+                         "uses the .rpt from --run, an existing .rpt next to a .inp input, or a .rpt input directly")
+    ap.add_argument("--pipeline", action="store_true",
+                    help="full pipeline in one go: DXF -> .inp -> run -> Chinese check report (implies --run --report)")
+    ap.add_argument("--outdir", default=None,
+                    help="directory for pipeline products (.inp unless -o points elsewhere, plus .rpt and the report)")
+    ap.add_argument("--report-output", default=None, help="explicit path for the check report .md")
     args = ap.parse_args(argv)
+    if args.pipeline:
+        args.run = args.report = True
+    ext = os.path.splitext(args.input)[1].lower()
+    if ext == ".rpt":
+        return report_only(args)
+    if ext == ".inp":
+        if not (args.run or args.report):
+            print("error: input is already a .inp — nothing to convert; add --run and/or --report",
+                  file=sys.stderr)
+            return 1
+        if not os.path.exists(args.input):
+            print(f"error: cannot read {args.input}", file=sys.stderr)
+            return 1
+        print(f"OK  {args.input} (existing model, conversion skipped)")
+        return finish_pipeline(args, args.input)
+    if ext != ".dxf":
+        print(f"error: unsupported input {args.input} (expected .dxf, .inp or .rpt)", file=sys.stderr)
+        return 1
+    if args.output is None and args.outdir:
+        os.makedirs(args.outdir, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(args.input))[0]
+        args.output = os.path.join(args.outdir, stem + ".inp")
     args.output = args.output or args.input.rsplit(".", 1)[0] + ".inp"
     # sane MaxDepth even when a user supplies inverts above the rim default
     args.default_rim = max(args.default_rim, args.default_invert + 5.0)
@@ -374,7 +534,7 @@ def main(argv=None):
     print(f"    conduits: {len(conduits)}, total length {total_len:.1f} m")
     for w in warnings:
         print(f"    warning: {w}")
-    return 0
+    return finish_pipeline(args, args.output)
 
 
 if __name__ == "__main__":
