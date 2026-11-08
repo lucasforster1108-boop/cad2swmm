@@ -47,10 +47,36 @@ nodes: 5 (junctions 4 + outfall OUT1)
 conduits: 4, total length 115.0 m
 ```
 
-仓库里有两个测试脚本，因为我要的是证据，不是截图。`tests/validate.py`
+仓库里有三个测试脚本，因为我要的是证据，不是截图。`tests/validate.py`
 查结构（管长、管径、流向）；`tests/run_swmm.py` 用 pyswmm 调真正的 EPA
 SWMM 引擎实跑生成的模型：50 L/s 设计入流从头输到尾，出水口峰值约 54 L/s
-（含动力波效应），流量演算连续性误差小于 0.1%。
+（含动力波效应），流量演算连续性误差小于 0.1%；`tests/run_pipeline.py`
+验下面这条一条龙流程，三件产物齐全、报告数字与 .rpt 原文对得上才算过。
+
+## 一条龙：图纸 → 模拟 → 中文校核报告
+
+转换只是第一步。加上 `--pipeline`，同一个脚本会把流程走完：转出
+`.inp` 后用 pyswmm 调真正的 SWMM 引擎实跑，再把 `.rpt` 变成一份中文
+校核报告（Markdown）——连续性误差判定、出口流量汇总、节点溢流/超载、
+管道满流比，结论逐条给出，数值全部取自 .rpt 原文。
+
+```bash
+pip install pyswmm
+python cad2swmm.py examples/example.dxf --pipeline --outdir examples/pipeline --design-flow 50
+```
+
+`examples/pipeline/` 里就是上面这条命令的真实产物：`example.inp`、
+`example.rpt`、`example_校核报告.md`。分步开关也有：`--run` 只跑模拟、
+`--report` 只出报告。已经有 `.inp` 或 `.rpt` 时，把文件直接当输入传
+进来就能用后半段：
+
+```bash
+python cad2swmm.py model.inp --run --report
+python cad2swmm.py model.rpt            # 只出校核报告
+```
+
+报告生成用的是仓库内置的 `swmm_report_cn/` 包（源自 swmm-report-cn，
+MIT，纯标准库、零第三方依赖），不用另外安装。
 
 ## 主要参数
 
@@ -64,6 +90,11 @@ SWMM 引擎实跑生成的模型：50 L/s 设计入流从头输到尾，出水�
 --roughness 0.013          糙率（默认混凝土管）
 --design-flow 50           在最高点井加恒定入流（L/s），用于冒烟测试
 --snap 2.0                 管端点到井的吸附容差（图纸单位）
+--pipeline                 一条龙：转换 → 实跑 → 中文校核报告（等同 --run --report）
+--run                      转换后用 pyswmm 实跑 .inp，产出 .rpt
+--report                   由 .rpt 生成中文校核报告（.md）
+--outdir DIR               一条龙产物目录（.inp / .rpt / 报告）
+--report-output PATH       校核报告的指定输出路径
 ```
 
 ## 图要怎么画

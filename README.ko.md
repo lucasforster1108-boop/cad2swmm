@@ -50,11 +50,40 @@ nodes: 5 (junctions 4 + outfall OUT1)
 conduits: 4, total length 115.0 m
 ```
 
-테스트 스크립트가 두 개 있는 이유는 스크린샷이 아니라 증거가 필요했기
+테스트 스크립트가 세 개 있는 이유는 스크린샷이 아니라 증거가 필요했기
 때문입니다. `tests/validate.py`는 구조(길이, 관경, 흐름 방향)를 검사하고,
 `tests/run_swmm.py`는 pyswmm으로 실제 EPA SWMM 엔진에서 생성된 모델을
 실행합니다. 50 L/s 설계 유입이 끝까지 전달되고, 방류구 첨두는 동적파
 효과를 포함해 약 54 L/s, 흐름 추적 연속성 오차는 0.1% 미만입니다.
+`tests/run_pipeline.py`는 아래 전체 파이프라인을 검증합니다. 산출물
+세 가지가 모두 생성되고, 보고서의 수치가 .rpt 원문과 일치하는지
+확인합니다.
+
+## 전체 파이프라인: 도면 → 시뮬레이션 → 중국어 검수 보고서
+
+변환은 첫 단계일 뿐입니다. `--pipeline`을 붙이면 같은 스크립트가 끝까지
+진행합니다. pyswmm으로 실제 SWMM 엔진에서 `.inp`를 실행하고, `.rpt`를
+중국어 검수 보고서(Markdown)로 만듭니다. 연속성 오차 판정, 방류구 유량
+요약, 침수/과부하 노드와 만관 파이프 목록까지, 모든 수치는 .rpt 원문
+그대로입니다.
+
+```bash
+pip install pyswmm
+python cad2swmm.py examples/example.dxf --pipeline --outdir examples/pipeline --design-flow 50
+```
+
+`examples/pipeline/`의 파일들이 바로 이 명령의 실제 산출물입니다.
+단계별 실행도 됩니다. `--run`은 시뮬레이션만, `--report`는 보고서만
+만듭니다. 이미 `.inp`나 `.rpt`가 있으면 파일 자체를 입력으로 넘겨
+후반 단계만 쓸 수 있습니다.
+
+```bash
+python cad2swmm.py model.inp --run --report
+python cad2swmm.py model.rpt            # 검수 보고서만
+```
+
+보고서는 이 저장소에 포함된 `swmm_report_cn/` 패키지(swmm-report-cn,
+MIT, 표준 라이브러리만 사용)가 생성하므로 별도 설치가 필요 없습니다.
 
 ## 주요 옵션
 
@@ -68,6 +97,11 @@ conduits: 4, total length 115.0 m
 --roughness 0.013          Manning's n (default: concrete pipe)
 --design-flow 50           add a constant inflow (L/s) at the highest junction
 --snap 2.0                 endpoint-to-node snap tolerance (drawing units)
+--pipeline                 full pipeline: convert -> run -> Chinese check report (implies --run --report)
+--run                      run the .inp in the SWMM engine (pyswmm), producing a .rpt
+--report                   generate a Chinese check report (.md) from the .rpt
+--outdir DIR               directory for pipeline products (.inp/.rpt/report)
+--report-output PATH       explicit path for the check report .md
 ```
 
 ## 도면 작성 규칙
