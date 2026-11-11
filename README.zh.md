@@ -10,6 +10,11 @@ cad2swmm 读一张 DXF 排水图纸，生成一个能在 EPA SWMM 5 里直接打
 `.inp` 文件。它只干这一件事，但省掉的是最烦的那一个小时。GitHub 上其他
 SWMM 工具都从 GIS 数据开始，可工程师画管网不用 GIS，CAD 这一步一直没人补。
 
+给水那边同样的烦恼也搬进来了。`cad2epanet.py` 对 EPANET 干同样的事：
+DXF 给水图纸进，能跑的 EPANET 2.2 `.inp` 出。它原来是独立仓库
+（cad2epanet），现已并入本仓库——两个转换器共用的部分（读图、端点吸附、
+标注匹配）抽到了一个共享模块 `dxfnet.py` 里，各自只留自己模型的语义。
+
 ```bash
 pip install ezdxf
 python cad2swmm.py my_network.dxf -o my_network.inp
@@ -78,6 +83,61 @@ python cad2swmm.py model.rpt            # 只出校核报告
 报告生成用的是仓库内置的 `swmm_report_cn/` 包（源自 swmm-report-cn，
 MIT，纯标准库、零第三方依赖），不用另外安装。
 
+## 给水版：cad2epanet
+
+```bash
+python cad2epanet.py my_water_network.dxf -o my_water_network.inp
+```
+
+它从图里读什么：
+
+- 节点：节点图层上的块、点、圆，生成普通节点、水源和水池
+- 节点名和地面标高：来自块属性（`ID`、`ELEV` / `EL` / `INV` / `IL`），或
+  `EL=52.30` 这样的文字；需水量来自块属性 `DEMAND`（L/s）
+- 水源：块属性 `TYPE=RESERVOIR` 的节点。总水头取块属性 `HEAD`；没有
+  `HEAD` 时用水头 = 标高 + `--source-head`，并打印警告，不藏着。图上一
+  个水源都没标时，取标高最高的节点当水源，同样警告
+- 水池：块属性 `TYPE=TANK` 的节点，水位和直径用 `--tank-*` 参数
+- 管道和管径：读法和排水版完全一样
+
+和排水有一点本质区别：给水是压力流，**管道不按标高定向**。一根管就是连
+两个点，水往哪流由 EPANET 算。
+
+给水这边也有同一个 5 节点示例（`examples/make_example_epanet.py` 生成
+`example_epanet.dxf`）：
+
+```bash
+python examples/make_example_epanet.py
+python cad2epanet.py examples/example_epanet.dxf -o examples/example_epanet.inp
+```
+
+```
+nodes: 5 (junctions 4 + reservoir R1)
+pipes: 4, total length 115.0 m
+total base demand: 16 L/s
+```
+
+给水这边另有两个测试脚本。`tests/validate_epanet.py` 查结构，并验证每个
+节点都连通回水源；`tests/run_epanet.py` 用 WNTR（自带 EPANET 引擎）实跑
+生成的模型：水源出流正好 16.00 L/s，与全部基准需水量严丝合缝；四个节点
+压力在 11.95～14.93 m 之间，就是 115 m 管道在这个流量下该有的那一点沿程
+损失。
+
+和 cad2swmm 不同的参数（`--scale`、`--snap`、`--node-layers`、
+`--pipe-layers`、`--default-diameter` 用法相同）：
+
+```
+--default-elevation 0.0    找不到标高时的默认地面标高（米）
+--roughness-c 130          Hazen-Williams C 值（130 = 新铸铁管/球铁管）
+--reservoir J9             水源节点名（不给则用 TYPE=RESERVOIR 的块；
+                           再没有取标高最高点，并警告）
+--source-head 10           水源块没有 HEAD 属性时，用标高加这个数（米）
+                           作为总水头
+--tank-diameter 10         TYPE=TANK 节点的水池直径（米）
+--tank-init-level 2        TYPE=TANK 节点的初始水位（米）
+--tank-max-level 5         TYPE=TANK 节点的最高水位（米）
+```
+
 ## 主要参数
 
 ```
@@ -111,6 +171,8 @@ MIT，纯标准库、零第三方依赖），不用另外安装。
 - 直接读 DWG
 - 汇水区和降雨——这部分还得你自己划
 - 水泵、阀门、雨污双系统
+- EPANET 侧：需水量模式和延时模拟——生成的模型是单个稳态快照；也没有
+  水泵曲线、控制阀、消防流量和水质（水龄/余氯）模拟
 
 它也能当 Agent Skill 用（见 `SKILL.md`）：装进支持 SKILL.md 的工具
 （Claude Code、DeepSeek Harness 等），直接说「把这张 CAD 图转成 SWMM

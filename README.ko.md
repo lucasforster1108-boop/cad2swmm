@@ -12,6 +12,13 @@ cad2swmm는 DXF 배수 도면을 읽어 EPA SWMM 5에서 바로 열고 실행할
 없애 줍니다. GitHub의 다른 SWMM 도구들은 전부 GIS 데이터에서 시작하는데,
 엔지니어는 배수 관망을 GIS로 그리지 않기 때문에 CAD 단계가 비어 있었습니다.
 
+급수 쪽의 같은 번거로움도 이곳으로 옮겨 왔습니다. `cad2epanet.py`는
+EPANET에 대해 똑같은 일을 합니다. DXF 급수 도면을 읽어 실행 가능한
+EPANET 2.2 `.inp`를 만듭니다. 원래는 독립 저장소(cad2epanet)였지만, 두
+변환기의 구조 대부분이 공통이라 이 저장소로 합쳤습니다. DXF 읽기, 끝점
+흡착, 라벨 매칭은 공유 모듈 `dxfnet.py`로 옮겼고, 각 스크립트에는 자기
+모델의 의미만 남겼습니다.
+
 ```bash
 pip install ezdxf
 python cad2swmm.py my_network.dxf -o my_network.inp
@@ -85,6 +92,61 @@ python cad2swmm.py model.rpt            # 검수 보고서만
 보고서는 이 저장소에 포함된 `swmm_report_cn/` 패키지(swmm-report-cn,
 MIT, 표준 라이브러리만 사용)가 생성하므로 별도 설치가 필요 없습니다.
 
+## cad2epanet: 급수 버전
+
+```bash
+python cad2epanet.py my_water_network.dxf -o my_water_network.inp
+```
+
+도면에서 읽는 것:
+
+- 노드: 노드 레이어의 블록, 점, 원 → 접합점, 저수조(reservoir), 탱크
+- 노드 이름과 지반 표고: 블록 속성(`ID`, `ELEV` / `EL` / `INV` / `IL`)
+  또는 `EL=52.30` 같은 텍스트. 수요량은 `DEMAND` 속성(L/s)
+- 수원: `TYPE=RESERVOIR` 속성을 가진 노드. 전수두는 `HEAD` 속성에서
+  가져오고, 없으면 표고 + `--source-head`로 계산해 경고로 출력합니다
+  (숨기지 않습니다). 수원이 하나도 표시돼 있지 않으면 가장 높은 노드를
+  쓰고 역시 경고합니다
+- 탱크: `TYPE=TANK` 노드. 수위와 직경은 `--tank-*` 옵션
+- 파이프와 관경 읽는 법은 배수 버전과 완전히 같습니다
+
+배수와 본질적으로 다른 점이 하나 있습니다. 급수는 압력 흐름이라
+**파이프를 표고로 방향 짓지 않습니다**. 파이프는 두 점을 이을 뿐, 흐름
+방향은 EPANET이 계산합니다.
+
+급수 쪽에도 같은 5노드 예제가 있습니다(`examples/make_example_epanet.py`가
+`example_epanet.dxf`를 생성합니다).
+
+```bash
+python examples/make_example_epanet.py
+python cad2epanet.py examples/example_epanet.dxf -o examples/example_epanet.inp
+```
+
+```
+nodes: 5 (junctions 4 + reservoir R1)
+pipes: 4, total length 115.0 m
+total base demand: 16 L/s
+```
+
+급수 쪽 테스트는 두 개입니다. `tests/validate_epanet.py`는 구조와 모든
+접합점이 수원까지 연결되는지를 검사하고, `tests/run_epanet.py`는 WNTR로
+실제 EPANET 엔진에서 모델을 실행합니다. 수원 유출량은 정확히 16.00 L/s로
+전체 기준 수요량과 일치하고, 접합점 압력은 11.95~14.93 m로, 115 m
+파이프에서 이 유량이면 나올 법한 손실수두입니다.
+
+cad2swmm와 다른 옵션(`--scale`, `--snap`, `--node-layers`,
+`--pipe-layers`, `--default-diameter`는 동일):
+
+```
+--default-elevation 0.0    fallback ground elevation (m) when no EL text is found
+--roughness-c 130          Hazen-Williams C (130 = new cast iron / DI)
+--reservoir J9             source node name (else TYPE=RESERVOIR, else highest node)
+--source-head 10           head (m) added to elevation when a reservoir has no HEAD
+--tank-diameter 10         diameter (m) for TYPE=TANK nodes
+--tank-init-level 2        initial level (m) for TYPE=TANK nodes
+--tank-max-level 5         max level (m) for TYPE=TANK nodes
+```
+
 ## 주요 옵션
 
 ```
@@ -119,6 +181,9 @@ MIT, 표준 라이브러리만 사용)가 생성하므로 별도 설치가 필�
 - DWG 직접 읽기
 - 소유역과 강우 — 이 부분은 아직 직접 나눠야 합니다
 - 펌프, 밸브, 오수+우수 이중 시스템
+- EPANET 쪽: 수요 패턴과 연장 시간 모의 — 생성되는 모델은 정상상태
+  스냅샷 하나뿐입니다. 펌프 곡선, 제어 밸브, 소화 유량, 수질 모의도
+  없습니다
 
 SKILL.md를 지원하는 도구(Claude Code, DeepSeek Harness 등)에서는 에이전트
 스킬로도 쓸 수 있습니다(`SKILL.md` 참조).

@@ -32,21 +32,27 @@ into a Chinese check report (Markdown) using the vendored swmm_report_cn
 package in this repo:  DXF -> .inp -> .rpt -> 校核报告.md.  An existing .inp
 or .rpt can also be passed as input to use just the later stages.
 
+The DXF-reading half (layers, snapping, topology, labels) is shared with
+cad2epanet.py — the water-supply converter that lives in this repo too —
+in dxfnet.py. This file keeps only what is specific to drainage and SWMM:
+manhole inverts, the outfall, gravity flow direction and the .inp layout.
+
 Requires: ezdxf  (pip install ezdxf);  pyswmm for --run/--pipeline.
 License: MIT
 """
 
 import argparse
-import math
 import os
 import re
 import shutil
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import ezdxf
 
-DIAM_RE = re.compile(r"(?:DN|D|Φ|φ|d)\s*(\d{2,4})|(\d{2,4})\s*mm", re.IGNORECASE)
+from dxfnet import (NodeIndex, assign_diameters, build_links, collect_texts,
+                    first_float, nearest_text_value, node_candidates)
+
 INVERT_RE = re.compile(r"(?:IL|INV|INVERT|管底|标高)\s*[=:：]?\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE)
 
 DEFAULT_NODE_LAYERS = ["JUNCTION", "MANHOLE", "NODE", "检查井", "井"]
@@ -63,187 +69,45 @@ class Node:
     auto: bool = False
 
 
-@dataclass
-class Conduit:
-    name: str
-    a: Node
-    b: Node
-    length: float  # metres, after scaling
-    diameter: float | None = None  # metres
-    mid: tuple = field(default=(0.0, 0.0))  # drawing units, for text matching
-
-
-def dist(p, q):
-    return math.hypot(p[0] - q[0], p[1] - q[1])
-
-
-def attribs_of(insert):
-    out = {}
-    for a in insert.attribs:
-        out[a.dxf.tag.strip().upper()] = a.dxf.text.strip()
-    return out
-
-
-def first_float(*vals):
-    for v in vals:
-        if v is None:
-            continue
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            continue
-    return None
-
-
-def layer_match(layer, wanted):
-    layer = (layer or "").upper()
-    return any(w.upper() in layer or layer in w.upper() for w in wanted)
-
-
-def collect_texts(msp):
-    """All TEXT/MTEXT as (x, y, string)."""
-    texts = []
-    for e in msp:
-        if e.dxftype() == "TEXT":
-            texts.append((e.dxf.insert.x, e.dxf.insert.y, e.dxf.text))
-        elif e.dxftype() == "MTEXT":
-            texts.append((e.dxf.insert.x, e.dxf.insert.y, e.text))
-    return texts
-
-
 def build_nodes(msp, node_layers, texts, args, warnings):
-    nodes: list[Node] = []
-    used_names = set()
-    counter = [0]
-
-    def auto_name():
-        while True:
-            counter[0] += 1
-            n = f"J{counter[0]}"
-            if n not in used_names:
-                return n
+    idx = NodeIndex(args.snap)
 
     def add_node(x, y, name=None, invert=None, is_outfall=False, auto=False):
-        for n in nodes:  # merge duplicates within snap tolerance
-            if dist((x, y), (n.x, n.y)) <= args.snap:
-                if name and n.auto:
-                    n.name, n.auto = name, False
-                    used_names.add(name)
-                if invert is not None and n.invert is None:
-                    n.invert = invert
-                n.is_outfall = n.is_outfall or is_outfall
-                return n
-        if not name:
-            name = auto_name()
-        else:
-            if name in used_names:
-                name = f"{name}_{auto_name()}"
-            used_names.add(name)
-        node = Node(name, x, y, invert, is_outfall, auto)
-        nodes.append(node)
-        return node
+        n = idx.find_at(x, y)  # merge duplicates within snap tolerance
+        if n is not None:
+            if name and n.auto:
+                n.name, n.auto = name, False
+                idx.claim(name)
+            if invert is not None and n.invert is None:
+                n.invert = invert
+            n.is_outfall = n.is_outfall or is_outfall
+            return n
+        node = Node(idx.unique_name(name), x, y, invert, is_outfall, auto)
+        return idx.register(node)
 
-    for e in msp:
-        if not layer_match(e.dxf.layer, node_layers):
-            continue
-        t = e.dxftype()
+    for t, x, y, at in node_candidates(msp, node_layers):
         if t == "INSERT":
-            at = attribs_of(e)
             name = at.get("ID") or at.get("NAME") or at.get("编号")
             invert = first_float(at.get("INV"), at.get("IL"), at.get("ELEV"))
             is_out = (at.get("TYPE", "").upper() == "OUTFALL") or (
                 name and args.outfall and name.upper() == args.outfall.upper()
             )
-            add_node(e.dxf.insert.x, e.dxf.insert.y, name, invert, bool(is_out))
-        elif t == "POINT":
-            add_node(e.dxf.location.x, e.dxf.location.y)
-        elif t == "CIRCLE":
-            add_node(e.dxf.center.x, e.dxf.center.y)
+            add_node(x, y, name, invert, bool(is_out))
+        else:  # POINT / CIRCLE
+            add_node(x, y)
 
+    nodes = idx.nodes
     # invert elevations from nearby "IL=..." texts
     for n in nodes:
-        if n.invert is not None:
-            continue
-        best, bestd = None, args.text_radius
-        for (tx, ty, s) in texts:
-            m = INVERT_RE.search(s or "")
-            if m and dist((tx, ty), (n.x, n.y)) < bestd:
-                best, bestd = float(m.group(1)), dist((tx, ty), (n.x, n.y))
-        if best is not None:
-            n.invert = best
+        if n.invert is None:
+            v = nearest_text_value(texts, n.x, n.y, args.text_radius, INVERT_RE)
+            if v is not None:
+                n.invert = v
     for n in nodes:
         if n.invert is None:
             n.invert = args.default_invert
             warnings.append(f"node {n.name}: no invert found, default {args.default_invert} m used")
     return nodes, add_node
-
-
-def nearest_node(nodes, p, tol):
-    best, bestd = None, tol
-    for n in nodes:
-        d = dist(p, (n.x, n.y))
-        if d < bestd:
-            best, bestd = n, d
-    return best
-
-
-def build_conduits(msp, pipe_layers, nodes, add_node, args, warnings):
-    conduits: list[Conduit] = []
-
-    def node_at(p):
-        n = nearest_node(nodes, p, args.snap)
-        if n is None:
-            n = add_node(p[0], p[1], auto=True)
-            warnings.append(f"pipe endpoint at ({p[0]:.1f},{p[1]:.1f}) had no node within "
-                            f"--snap; auto node {n.name} created")
-        return n
-
-    def add_segment(p, q):
-        if dist(p, q) < 1e-9:
-            return
-        a, b = node_at(p), node_at(q)
-        if a is b:
-            warnings.append("a pipe segment snapped both ends to the same node; skipped")
-            return
-        length = dist(p, q) * args.scale
-        mid = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
-        conduits.append(Conduit(f"C{len(conduits) + 1}", a, b, length, None, mid))
-
-    for e in msp:
-        if not layer_match(e.dxf.layer, pipe_layers):
-            continue
-        t = e.dxftype()
-        if t == "LINE":
-            add_segment((e.dxf.start.x, e.dxf.start.y), (e.dxf.end.x, e.dxf.end.y))
-        elif t in ("LWPOLYLINE", "POLYLINE"):
-            pts = [(v[0], v[1]) for v in e.get_points()] if t == "LWPOLYLINE" \
-                else [(v.dxf.location.x, v.dxf.location.y) for v in e.vertices]
-            if e.closed and len(pts) > 2:
-                pts.append(pts[0])
-            for p, q in zip(pts, pts[1:]):
-                add_segment(p, q)
-    return conduits
-
-
-def assign_diameters(conduits, texts, args, warnings):
-    labels = []
-    for (tx, ty, s) in texts:
-        m = DIAM_RE.search(s or "")
-        if m:
-            labels.append((tx, ty, int(m.group(1) or m.group(2)) / 1000.0))
-    for c in conduits:
-        best, bestd = None, None
-        for (tx, ty, d) in labels:
-            dd = dist((tx, ty), c.mid)
-            if bestd is None or dd < bestd:
-                best, bestd = d, dd
-        # accept the nearest label only if it sits within half the pipe length (drawing units)
-        if best is not None and bestd <= (c.length / args.scale) * 0.75:
-            c.diameter = best
-        else:
-            c.diameter = args.default_diameter
-            warnings.append(f"conduit {c.name}: no diameter label found, "
-                            f"default {args.default_diameter} m used")
 
 
 def pick_outfall(nodes, args, warnings):
@@ -517,11 +381,12 @@ def main(argv=None):
     if not nodes:
         print("error: no nodes found — check --node-layers against your drawing", file=sys.stderr)
         return 1
-    conduits = build_conduits(msp, args.pipe_layers.split(","), nodes, add_node, args, warnings)
+    conduits = build_links(msp, args.pipe_layers.split(","), nodes, add_node,
+                           args.snap, args.scale, "C", warnings)
     if not conduits:
         print("error: no pipes found — check --pipe-layers against your drawing", file=sys.stderr)
         return 1
-    assign_diameters(conduits, texts, args, warnings)
+    assign_diameters(conduits, texts, args.scale, args.default_diameter, warnings, noun="conduit")
     outfall = pick_outfall(nodes, args, warnings)
     args.default_rim = max([args.default_rim] + [n.invert + 1.0 for n in nodes])
 
@@ -535,7 +400,6 @@ def main(argv=None):
     for w in warnings:
         print(f"    warning: {w}")
     return finish_pipeline(args, args.output)
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
