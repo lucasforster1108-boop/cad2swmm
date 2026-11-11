@@ -1,0 +1,52 @@
+[TITLE]
+cad2epanet model generated from examples/example_epanet.dxf
+
+[JUNCTIONS]
+;ID              Elevation    Demand       Pattern
+J1               48.000       5           
+J2               46.500       8           
+J3               45.000       0           
+J4               47.500       3           
+
+[RESERVOIRS]
+;ID              Head         Pattern
+R1               60.000      
+
+[PIPES]
+;ID              Node1            Node2            Length       Diameter     Roughness    MinorLoss    Status
+P1               R1               J1               30.00        200          130          0            OPEN
+P2               J1               J2               30.00        200          130          0            OPEN
+P3               J2               J3               30.00        150          130          0            OPEN
+P4               J2               J4               25.00        100          130          0            OPEN
+
+[COORDINATES]
+;Node            X-Coord          Y-Coord
+R1               0.00             0.00
+J1               30.00            0.00
+J2               60.00            0.00
+J3               90.00            0.00
+J4               60.00            25.00
+
+[OPTIONS]
+Units            LPS
+Headloss         H-W
+Specific Gravity 1.0
+Viscosity        1.0
+Trials           200
+Accuracy         0.001
+Unbalanced       Continue 10
+Demand Multiplier 1.0
+Quality          None
+
+[TIMES]
+Duration         0:00
+Hydraulic Timestep 1:00
+Report Timestep  1:00
+
+[REPORT]
+Status           No
+Summary          Yes
+Nodes            All
+Links            All
+
+[END]
